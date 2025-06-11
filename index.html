@@ -15,12 +15,15 @@
     .controls { display: flex; flex-direction: column; gap: 16px; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     label { font-weight: bold; }
-    button { font-size: 1rem; padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; }
+    button { font-size: 1rem; padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; transition: opacity 0.2s, box-shadow 0.2s; }
+    button:hover:not(:disabled) { opacity: 0.8; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
     .btn-bgm { background: #4caf50; color: #fff; }
+    .btn-bgm.active { box-shadow: inset 0 0 0 3px #000; }
+    .btn-bgm:not(.active) { opacity: 0.5; }
     .btn-play { background: #f44336; color: #fff; }
     .btn-mode { background: #2196f3; color: #fff; }
-    button:disabled { background: #ccc; cursor: not-allowed; }
-    .active { box-shadow: inset 0 0 0 3px #000; }
+    .btn-mode.active { box-shadow: inset 0 0 0 3px #000; }
     input[type='file'] { font-size: 1rem; padding: 8px; border-radius: 6px; background: #fff; border: 1px solid #ccc; }
     input[type='range'] { width: 100%; }
     .waveforms { display: flex; flex-direction: column; gap: 16px; }
@@ -30,7 +33,7 @@
 </head>
 <body>
   <h1>ステレオ／モノラル体験アプリ</h1>
-  <p class="instruction">音楽選択後、「再生」を押して実際の音を聞きながら、波形をリアルタイム表示＆4つのモードを即時切り替えて定位感を体験できます。</p>
+  <p class="instruction">音楽選択後、「再生」→波形表示、再生モードの切替で定位感を体験。</p>
   <div class="container">
     <div class="card controls">
       <label>音楽選択</label>
@@ -68,7 +71,7 @@
   </div>
 
   <script>
-    // UI Elements
+    // UI
     const bgmButtons = [
       {btn: document.getElementById('bgm1Btn'), src: 'bgm1.mp3'},
       {btn: document.getElementById('bgm2Btn'), src: 'bgm2.mp3'},
@@ -91,7 +94,7 @@
       mono: document.getElementById('monoBtn')
     };
 
-    // Audio context and nodes
+    // Audio
     let audioCtx, audioBuf, sourceNode;
     let splitter, gainL, gainR, merger, postSplitter;
     let analyserL, analyserR;
@@ -99,6 +102,13 @@
     let startTime = 0, pauseOffset = 0;
     let isPlaying = false;
     let currentMode = 'stereo';
+
+    // BGM selection active state
+    function setActiveBgm(selected) {
+      bgmButtons.forEach(({btn}) => {
+        btn.classList.toggle('active', btn === selected);
+      });
+    }
 
     // Mode buttons event
     Object.entries(modeBtns).forEach(([mode, btn]) => {
@@ -111,58 +121,55 @@
 
     function updateRouting() {
       if (!gainL || !gainR) return;
-      // Disconnect previous
       if (merger) merger.disconnect();
       if (postSplitter) postSplitter.disconnect();
       gainL.disconnect(); gainR.disconnect();
-
-      // Create nodes
       merger = audioCtx.createChannelMerger(2);
       postSplitter = audioCtx.createChannelSplitter(2);
-
-      // Route based on mode
       if (currentMode === 'stereo') {
         gainL.connect(merger, 0, 0);
         gainR.connect(merger, 0, 1);
       } else if (currentMode === 'left') {
         gainL.connect(merger, 0, 0);
+        gainL.gain.value = 1; gainR.gain.value = 0;
       } else if (currentMode === 'right') {
         gainR.connect(merger, 0, 1);
+        gainL.gain.value = 0; gainR.gain.value = 1;
       } else if (currentMode === 'mono') {
         gainL.connect(merger, 0, 0);
         gainL.connect(merger, 0, 1);
         gainR.connect(merger, 0, 0);
         gainR.connect(merger, 0, 1);
+        gainL.gain.value = 0.5; gainR.gain.value = 0.5;
       }
-
-      // Connect to destination
       merger.connect(audioCtx.destination);
-
-      // Setup post-splitter for visualization
       merger.connect(postSplitter);
       postSplitter.connect(analyserL, 0);
       postSplitter.connect(analyserR, 1);
     }
 
-    // Load audio from URL or file
-    async function loadAudio(src) {
+    // Load audio
+    async function loadAudio(src, btn) {
       stopPlayback();
       if (audioCtx) audioCtx.close();
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const data = await (typeof src === 'string' ? fetch(src).then(r => r.arrayBuffer()) : src.arrayBuffer());
+      const data = await fetch(src).then(r => r.arrayBuffer());
       audioBuf = await audioCtx.decodeAudioData(data);
       dataInfo.textContent = `サンプル数: ${audioBuf.length.toLocaleString()}, チャンネル: ${audioBuf.numberOfChannels}`;
       playBtn.disabled = false;
       volRange.disabled = false;
       timeInfo.textContent = `再生時間: 0.00 / ${audioBuf.duration.toFixed(2)} 秒`;
+      setActiveBgm(btn);
     }
-
-    bgmButtons.forEach(({btn, src}) => btn.addEventListener('click', () => loadAudio(src)));
+    bgmButtons.forEach(({btn, src}) => btn.addEventListener('click', () => loadAudio(src, btn)));
     fileInput.addEventListener('change', () => {
-      if (fileInput.files[0]) loadAudio(fileInput.files[0]);
+      if (fileInput.files[0]) {
+        loadAudio(URL.createObjectURL(fileInput.files[0]), null);
+        setActiveBgm(null);
+      }
     });
 
-    // Playback controls
+    // Playback
     playBtn.addEventListener('click', () => startPlayback(pauseOffset));
     pauseBtn.addEventListener('click', pausePlayback);
     stopBtn.addEventListener('click', stopPlayback);
@@ -170,13 +177,10 @@
     function startPlayback(offset = 0) {
       if (!audioBuf) return;
       if (audioCtx.state === 'suspended') audioCtx.resume();
-      sourceNode = audioCtx.createBufferSource();
-      sourceNode.buffer = audioBuf;
+      sourceNode = audioCtx.createBufferSource(); sourceNode.buffer = audioBuf;
       splitter = audioCtx.createChannelSplitter(2);
-      gainL = audioCtx.createGain();
-      gainR = audioCtx.createGain();
-      analyserL = audioCtx.createAnalyser();
-      analyserR = audioCtx.createAnalyser();
+      gainL = audioCtx.createGain(); gainR = audioCtx.createGain();
+      analyserL = audioCtx.createAnalyser(); analyserR = audioCtx.createAnalyser();
       analyserL.fftSize = analyserR.fftSize = 1024;
       sourceNode.connect(splitter);
       splitter.connect(gainL, 0);
@@ -185,9 +189,7 @@
       sourceNode.start(0, offset);
       startTime = audioCtx.currentTime - offset;
       isPlaying = true;
-      playBtn.disabled = true;
-      pauseBtn.disabled = false;
-      stopBtn.disabled = false;
+      playBtn.disabled = true; pauseBtn.disabled = false; stopBtn.disabled = false;
       drawWaveforms();
       timerId = setInterval(() => {
         const elapsed = audioCtx.currentTime - startTime;
@@ -195,61 +197,24 @@
         if (elapsed >= audioBuf.duration) stopPlayback();
       }, 100);
     }
+    function pausePlayback() { if (!isPlaying) return; sourceNode.stop(); pauseOffset = audioCtx.currentTime - startTime; isPlaying = false; playBtn.disabled = false; pauseBtn.disabled = true; clearInterval(timerId); cancelAnimationFrame(drawId); }
+    function stopPlayback() { if (sourceNode) sourceNode.stop(); isPlaying = false; pauseOffset = 0; playBtn.disabled = false; pauseBtn.disabled = true; stopBtn.disabled = true; clearInterval(timerId); cancelAnimationFrame(drawId); timeInfo.textContent = `再生時間: 0.00 / ${audioBuf ? audioBuf.duration.toFixed(2) : '0.00'} 秒`; }
 
-    function pausePlayback() {
-      if (!isPlaying) return;
-      sourceNode.stop();
-      pauseOffset = audioCtx.currentTime - startTime;
-      isPlaying = false;
-      playBtn.disabled = false;
-      pauseBtn.disabled = true;
-      clearInterval(timerId);
-      cancelAnimationFrame(drawId);
-    }
-
-    function stopPlayback() {
-      if (sourceNode) sourceNode.stop();
-      isPlaying = false;
-      pauseOffset = 0;
-      playBtn.disabled = false;
-      pauseBtn.disabled = true;
-      stopBtn.disabled = true;
-      clearInterval(timerId);
-      cancelAnimationFrame(drawId);
-      timeInfo.textContent = `再生時間: 0.00 / ${audioBuf ? audioBuf.duration.toFixed(2) : '0.00'} 秒`;
-    }
-
-    // Waveform drawing
+    // Waveform
     function drawWaveforms() {
       const dataL = new Uint8Array(analyserL.fftSize);
       const dataR = new Uint8Array(analyserR.fftSize);
       analyserL.getByteTimeDomainData(dataL);
       analyserR.getByteTimeDomainData(dataR);
       const dataM = dataL.map((v, i) => (v + dataR[i]) >> 1);
-      const drawOne = (data, ctx, color) => {
-        ctx.fillStyle = '#eef2f7';
-        ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-        ctx.beginPath();
-        const slice = ctx.canvas.width / data.length;
-        data.forEach((v, i) => ctx.lineTo(i * slice, (v / 128) * (ctx.canvas.height / 2)));
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      };
-      drawOne(dataL, canvasLeft, '#e53935');
-      drawOne(dataR, canvasRight, '#1e88e5');
-      drawOne(dataM, canvasMono, '#6a1b9a');
+      const draw = (d, ctx, col) => { ctx.fillStyle = '#eef2f7'; ctx.fillRect(0,0,ctx.canvas.width,ctx.canvas.height); ctx.beginPath(); const s = ctx.canvas.width / d.length; d.forEach((v, i) => ctx.lineTo(i*s, (v/128)*(ctx.canvas.height/2))); ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke(); };
+      draw(dataL, canvasLeft, '#e53935');
+      draw(dataR, canvasRight, '#1e88e5');
+      draw(dataM, canvasMono, '#6a1b9a');
       drawId = requestAnimationFrame(drawWaveforms);
     }
 
-    // Volume control
-    volRange.addEventListener('input', () => {
-      if (gainL && gainR) {
-        const v = parseFloat(volRange.value);
-        gainL.gain.value = v;
-        gainR.gain.value = v;
-      }
-    });
+    volRange.addEventListener('input', () => { if (gainL && gainR) { const v = parseFloat(volRange.value); gainL.gain.value = v; gainR.gain.value = v; } });
 
     // Initialize
     modeBtns.stereo.classList.add('active');
